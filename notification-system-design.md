@@ -812,3 +812,310 @@ This index efficiently supports:
 - Use a composite index on `(studentID, isRead, createdAt)` for the unread notifications API.
 - Do **not** create indexes on every column, as they increase storage and write costs.
 - Use targeted composite indexes based on common query patterns to achieve efficient performance.
+
+---
+
+# Stage 4 - Performance Optimization
+
+## Problem Statement
+
+Currently, the application fetches all notifications from the database every time a student opens a page.
+
+With:
+
+- 50,000+ students
+- Millions of notifications
+
+this approach puts unnecessary load on the database, increases response time, and negatively impacts the user experience.
+
+---
+
+# Performance Improvement Strategies
+
+## 1. Pagination (Recommended)
+
+### Problem
+
+Fetching every notification on each request transfers unnecessary data.
+
+### Solution
+
+Return notifications in small batches.
+
+Example API:
+
+```http
+GET /api/v1/notifications?page=1&limit=20
+```
+
+Example SQL:
+
+```sql
+SELECT notificationID,
+       title,
+       message,
+       notificationType,
+       createdAt,
+       isRead
+FROM notifications
+WHERE studentID = 1042
+ORDER BY createdAt DESC
+LIMIT 20 OFFSET 0;
+```
+
+### Benefits
+
+- Faster responses
+- Lower memory usage
+- Reduced database load
+- Better user experience
+
+### Trade-offs
+
+- Multiple requests are needed to load all notifications.
+- Offset-based pagination can become slower for very large page numbers (cursor-based pagination can solve this).
+
+---
+
+## 2. Fetch Only Unread Count
+
+### Problem
+
+Most users only need to know whether new notifications exist.
+
+### Solution
+
+Provide a lightweight API that returns only the unread notification count.
+
+Example:
+
+```http
+GET /api/v1/notifications/unread/count
+```
+
+SQL:
+
+```sql
+SELECT COUNT(*)
+FROM notifications
+WHERE studentID = 1042
+AND isRead = FALSE;
+```
+
+### Benefits
+
+- Very small response
+- Extremely fast
+- Minimal database load
+
+### Trade-offs
+
+- Does not return notification details.
+- A second request is required when the user opens the notification panel.
+
+---
+
+## 3. Redis Caching
+
+### Problem
+
+The same notification data is requested repeatedly.
+
+### Solution
+
+Store recently accessed notifications in Redis.
+
+Flow:
+
+```
+Client
+   │
+   ▼
+Redis Cache
+   │
+Cache Hit?
+ ┌──┴──┐
+ │ Yes │
+ ▼     │
+Return │
+       ▼
+      No
+       │
+       ▼
+Database
+       │
+       ▼
+Update Cache
+```
+
+### Benefits
+
+- Very fast response times
+- Reduces database traffic
+- Improves scalability
+
+### Trade-offs
+
+- Extra infrastructure
+- Cache invalidation must be handled when notifications change.
+
+---
+
+## 4. Real-Time Push Notifications (WebSocket)
+
+### Problem
+
+The client repeatedly requests notifications even when nothing has changed.
+
+### Solution
+
+Use WebSocket to push new notifications only when they are created.
+
+Flow:
+
+```
+Server
+   │
+New Notification
+   │
+   ▼
+WebSocket
+   │
+   ▼
+Student Browser
+```
+
+### Benefits
+
+- No unnecessary polling
+- Instant updates
+- Lower database usage
+- Better user experience
+
+### Trade-offs
+
+- Persistent connections consume server resources.
+- More complex implementation compared to REST.
+
+---
+
+## 5. Database Indexing
+
+Create indexes on frequently queried columns.
+
+```sql
+CREATE INDEX idx_student_read_created
+ON notifications(studentID, isRead, createdAt);
+```
+
+### Benefits
+
+- Faster filtering
+- Faster sorting
+- Reduced query execution time
+
+### Trade-offs
+
+- Additional storage required
+- Slightly slower INSERT, UPDATE, and DELETE operations
+
+---
+
+## 6. Read Replicas
+
+### Problem
+
+A single database server handles all read requests.
+
+### Solution
+
+Use database read replicas.
+
+Architecture:
+
+```
+                Application
+                     │
+        ┌────────────┴────────────┐
+        ▼                         ▼
+ Primary Database          Read Replica
+     (Writes)                 (Reads)
+```
+
+### Benefits
+
+- Distributes read traffic
+- Better scalability
+- Higher availability
+
+### Trade-offs
+
+- Replication lag may cause slightly stale data.
+- Additional infrastructure cost.
+
+---
+
+## 7. Archive Old Notifications
+
+### Problem
+
+The notifications table keeps growing indefinitely.
+
+### Solution
+
+Move old notifications (for example, older than one year) to an archive table or cold storage.
+
+### Benefits
+
+- Smaller active dataset
+- Faster queries
+- Reduced index size
+
+### Trade-offs
+
+- Archived notifications require separate retrieval if needed.
+
+---
+
+# Recommended Overall Architecture
+
+```
+                    Student
+                       │
+                       ▼
+                Load Balancer
+                       │
+                       ▼
+               Application Server
+                  │           │
+                  │           ▼
+                  │      WebSocket
+                  │
+                  ▼
+              Redis Cache
+                  │
+        Cache Miss │
+                  ▼
+        Read Replica Database
+                  │
+                  ▼
+          Primary Database
+                  │
+                  ▼
+          Archive Database
+```
+
+---
+
+# Recommended Solution
+
+To achieve the best performance and scalability:
+
+1. Use pagination to limit the number of notifications returned.
+2. Cache frequently accessed notifications and unread counts in Redis.
+3. Push new notifications using WebSocket instead of frequent polling.
+4. Create composite indexes for common query patterns.
+5. Use read replicas to distribute read traffic.
+6. Archive old notifications to keep the active dataset small.
+
+This combination minimizes database load, improves response times, supports real-time updates, and scales efficiently as the number of students and notifications grows.
