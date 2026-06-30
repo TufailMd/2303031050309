@@ -655,3 +655,160 @@ MongoDB Cluster
 - **Queries:** CRUD operations matching REST APIs
 - **Scalability:** Indexing, Pagination, Redis Cache, Replica Set, Sharding, WebSocket clustering
 - **High Availability:** MongoDB Replica Sets
+
+---
+
+# Stage 3 - SQL Query Performance Analysis
+
+## Existing Query
+
+```sql
+SELECT *
+FROM notifications
+WHERE studentID = 1042
+  AND isRead = false
+ORDER BY createdAt ASC;
+```
+
+---
+
+# 1. Is the Query Accurate?
+
+Yes.
+
+The query correctly returns all unread notifications for student **1042**, sorted by the oldest notification first.
+
+However, while the query is functionally correct, it becomes slow as the table grows to millions of records.
+
+---
+
+# 2. Why is the Query Slow?
+
+With approximately:
+
+- 50,000 students
+- 5,000,000 notifications
+
+the database may perform a large scan if appropriate indexes are not available.
+
+Possible reasons:
+
+- No index on `studentID`
+- No index on `isRead`
+- Sorting by `createdAt` requires additional work
+- `SELECT *` fetches every column even when only a few are required
+
+Without indexes, the query performs a **Full Table Scan**, resulting in approximately **O(N)** time complexity.
+
+---
+
+# 3. Optimized Query
+
+Retrieve only the required columns instead of using `SELECT *`.
+
+```sql
+SELECT
+    notificationID,
+    title,
+    message,
+    notificationType,
+    createdAt
+FROM notifications
+WHERE studentID = 1042
+  AND isRead = FALSE
+ORDER BY createdAt ASC;
+```
+
+---
+
+# 4. Recommended Index
+
+Create a composite index matching the filtering and sorting pattern.
+
+```sql
+CREATE INDEX idx_student_read_created
+ON notifications(studentID, isRead, createdAt);
+```
+
+### Why this index?
+
+- `studentID` filters notifications for one student.
+- `isRead` filters unread notifications.
+- `createdAt` supports sorting without an additional sort operation.
+
+The database can directly use the index to locate matching rows in sorted order.
+
+---
+
+# 5. Expected Computation Cost
+
+| Scenario | Time Complexity |
+|----------|-----------------|
+| No Index | O(N) |
+| Index on studentID only | O(log N) + filtering |
+| Composite Index (studentID, isRead, createdAt) | O(log N + K) |
+
+Where:
+
+- **N** = total notifications
+- **K** = unread notifications returned
+
+This significantly improves performance compared to scanning the entire table.
+
+---
+
+# 6. Should We Add Indexes on Every Column?
+
+**No.**
+
+Adding indexes to every column is not recommended.
+
+### Reasons
+
+- Increases storage usage.
+- Slows INSERT, UPDATE, and DELETE operations because all indexes must also be updated.
+- Many indexes are never used by queries.
+- Extra indexes increase maintenance overhead.
+
+Indexes should only be created for columns that are frequently used in:
+
+- WHERE
+- JOIN
+- ORDER BY
+- GROUP BY
+
+---
+
+# 7. Query to Find Students Who Received Placement Notifications in the Last 7 Days
+
+```sql
+SELECT DISTINCT studentID
+FROM notifications
+WHERE notificationType = 'Placement'
+  AND createdAt >= NOW() - INTERVAL 7 DAY;
+```
+
+---
+
+# 8. Recommended Index for This Query
+
+```sql
+CREATE INDEX idx_type_created_student
+ON notifications(notificationType, createdAt, studentID);
+```
+
+This index efficiently supports:
+
+- Filtering by `notificationType`
+- Filtering by recent dates
+- Returning matching `studentID` values
+
+---
+
+# 9. Summary
+
+- The original query is **correct** but may become slow at scale.
+- Avoid `SELECT *`; retrieve only required columns.
+- Use a composite index on `(studentID, isRead, createdAt)` for the unread notifications API.
+- Do **not** create indexes on every column, as they increase storage and write costs.
+- Use targeted composite indexes based on common query patterns to achieve efficient performance.
